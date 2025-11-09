@@ -5,11 +5,16 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class tag extends Model
+class Tag extends Model
 {
     use HasFactory;
 
     protected $fillable = [
         'nome',
     ];
+
+    public function operazioni()
+    {
+        return $this->belongsToMany(Operazione::class, 'rel_operazioni_tags');
+    }
 }
