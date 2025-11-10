@@ -54,15 +54,25 @@ class OperazioniApiController extends Controller
                 );
             }
 
-            $operazioni = $query->orderBy('data_operazione', 'desc')->get();
+            // Pagina (default 1, per_page default 50)
+            $perPage = $request->input('per_page', 50);
+            $page = $request->input('page', 1);
+
+            $operazioni = $query->orderBy('data_operazione', 'desc')->paginate($perPage, ['*'], 'page', $page);
 
             return response()->json([
                 'success' => true,
-                'data' => $operazioni,
-                'count' => $operazioni->count(),
+                'data' => $operazioni->items(),
+                'pagination' => [
+                    'current_page' => $operazioni->currentPage(),
+                    'per_page' => $operazioni->perPage(),
+                    'total' => $operazioni->total(),
+                    'last_page' => $operazioni->lastPage(),
+                    'has_more' => $operazioni->hasMorePages(),
+                ],
+                'count' => count($operazioni->items()),
                 'message' => 'Operazioni recuperate con successo'
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
