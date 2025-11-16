@@ -92,6 +92,7 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     // NOTA: La route del filtro DEVE stare PRIMA di {id}
     // Se no, Laravel confonde "filtro" con un ID numerico
     Route::get('operazioni/filtro/avanzato', [OperazioniApiController::class, 'filtroAvanzato']);
+    Route::get('operazioni/statistiche/totali', [OperazioniApiController::class, 'statisticheTotali']);
 
     Route::get('operazioni', [OperazioniApiController::class, 'index']);
     Route::post('operazioni', [OperazioniApiController::class, 'store']);

@@ -16,6 +16,7 @@ class Operazione extends Model
         'importo',
         'descrizione',
         'conto_id',
+        'trasferimento',
     ];
 
     public function tags() {

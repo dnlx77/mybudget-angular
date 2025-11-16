@@ -58,7 +58,7 @@ class OperazioniApiController extends Controller
             $perPage = $request->input('per_page', 50);
             $page = $request->input('page', 1);
 
-            $operazioni = $query->orderBy('data_operazione', 'desc')->paginate($perPage, ['*'], 'page', $page);
+            $operazioni = $query->orderBy('data_operazione', 'desc')->orderBy('id', 'desc')->paginate($perPage, ['*'], 'page', $page);
 
             return response()->json([
                 'success' => true,
@@ -116,10 +116,11 @@ class OperazioniApiController extends Controller
             $validated = $request->validate([
                 'data_operazione' => 'required|date',
                 'importo' => 'required|numeric',
-                'descrizione' => 'required|string|max:500',
+                'descrizione' => 'nullable|string|max:500',
                 'conto_id' => 'required|exists:conti,id',
                 'conto_destinazione_id' => 'nullable|exists:conti,id',  // ← Nuovo!
-                'tags' => 'array|exists:tags,id'
+                'tags' => 'required|array|min:1',        // ← Obbligatorio con almeno 1
+                'tags.*' => 'exists:tags,id'
             ]);
 
             // Validazione aggiuntiva: conto_destinazione_id deve essere diverso da conto_id
@@ -425,6 +426,61 @@ class OperazioniApiController extends Controller
                 'success' => false,
                 'error' => 'Errore nei filtri: ' . $e->getMessage(),
                 'code' => 500
+            ], 500);
+        }
+    }
+
+    /**
+     * GET /api/v1/operazioni/statistiche/totali
+     * Ritorna guadagni, spese e saldo TOTALI con filtri
+     * Esclude i trasferimenti (campo trasferimento = 'T')
+     */
+    public function statisticheTotali(Request $request)
+    {
+        try {
+            $query = Operazione::query();
+
+            // Applica filtri
+            if ($request->has('data') && $request->input('data')) {
+                $query->where('data_operazione', $request->input('data'));
+            }
+
+            if ($request->has('conto_id') && $request->input('conto_id')) {
+                $query->where('conto_id', $request->input('conto_id'));
+            }
+
+            if ($request->has('tag') && $request->input('tag')) {
+                $tag = $request->input('tag');
+                $query->whereHas('tags', function ($q) use ($tag) {
+                    $q->where('tags.nome', $tag);
+                });
+            }
+
+            // Esclude i trasferimenti
+            $query->where('trasferimento', '!=', 'T');
+
+            // Recupera TUTTE le operazioni (senza paginazione)
+            $operazioni = $query->get();
+
+            // Calcola statistiche
+            $guadagno = $operazioni->where('importo', '>', 0)->sum('importo');
+            $spese = $operazioni->where('importo', '<', 0)->sum('importo');
+            $spese = abs($spese);
+            $saldo = $guadagno - $spese;
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'guadagno' => $guadagno,
+                    'spese' => $spese,
+                    'saldo' => $saldo,
+                ],
+                'message' => 'Statistiche calcolate'
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Errore: ' . $e->getMessage(),
             ], 500);
         }
     }
