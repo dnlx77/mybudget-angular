@@ -35,11 +35,11 @@ class ContiApiController extends Controller
     {
         try {
             // Recupera tutti i conti con le loro operazioni già caricate
-            $conti = Conto::with('operazioni')->get();
+            $conti = Conto::withSum('operazioni', 'importo')->get();
 
-            // Calcoliamo il saldo di ogni conto
+            // Rinomina l'attributo per coerenza
             $conti->each(function ($conto) {
-                $conto->saldo_totale = $conto->operazioni->sum('importo');
+                $conto->saldo_totale = $conto->operazioni_sum_importo ?? 0;
             });
 
             return response()->json([

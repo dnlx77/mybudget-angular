@@ -40,17 +40,15 @@ class OperazioniApiController extends Controller
         try {
             $query = Operazione::with(['conto', 'tags']);
 
-            // Applica i filtri usando gli scopes che hai definito
-            if ($request->filled('anno') || $request->filled('mese') || 
-                $request->filled('giorno') || $request->filled('tag') || 
-                $request->filled('conto')) {
-                
+            // Applica i filtri usando lo scope
+            if ($request->filled('anno') || $request->filled('mese') || $request->filled('data') ||
+                $request->filled('conto_id') || $request->filled('tag')) {
                 $query->cercaOperazioniAvanzato(
-                    $request->input('anno'),
-                    $request->input('mese'),
-                    $request->input('giorno'),
+                    $request->input('data'),
+                    $request->input('conto_id'),
                     $request->input('tag'),
-                    $request->input('conto')
+                    $request->input('anno'),
+                    $request->input('mese')
                 );
             }
 
@@ -440,24 +438,24 @@ class OperazioniApiController extends Controller
         try {
             $query = Operazione::query();
 
-            // Applica filtri
-            if ($request->has('data') && $request->input('data')) {
-                $query->where('data_operazione', $request->input('data'));
+            // Applica gli stessi filtri del index()
+            if (
+                $request->filled('anno') || $request->filled('mese') || $request->filled('data') ||
+                $request->filled('conto_id') || $request->filled('tag')
+            ) {
+                $query->cercaOperazioniAvanzato(
+                    $request->input('data'),
+                    $request->input('conto_id'),
+                    $request->input('tag'),
+                    $request->input('anno'),
+                    $request->input('mese')
+                );
             }
 
-            if ($request->has('conto_id') && $request->input('conto_id')) {
-                $query->where('conto_id', $request->input('conto_id'));
+            // Esclude i trasferimenti se non è selezionato un conto
+            if(!($request->has('conto_id') && $request->input('conto_id'))) {
+                $query->where('trasferimento', '!=', 'T');
             }
-
-            if ($request->has('tag') && $request->input('tag')) {
-                $tag = $request->input('tag');
-                $query->whereHas('tags', function ($q) use ($tag) {
-                    $q->where('tags.nome', $tag);
-                });
-            }
-
-            // Esclude i trasferimenti
-            $query->where('trasferimento', '!=', 'T');
 
             // Recupera TUTTE le operazioni (senza paginazione)
             $operazioni = $query->get();

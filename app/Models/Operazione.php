@@ -27,21 +27,32 @@ class Operazione extends Model
         return $this->belongsTo(Conto::class, 'conto_id');
     }
 
-    public function scopeCercaOperazioniAvanzato($query, $anno, $mese, $giorno, $tag, $conto) {
-        if($conto) 
-            $query->where('conto_id', '=', $conto);
-
-        if($anno)
+    public function scopeCercaOperazioniAvanzato($query, $data, $conto_id, $tag, $anno = null, $mese = null)
+    {
+        // Filtro per anno
+        if ($anno) {
             $query->whereYear('data_operazione', $anno);
-        
-        if($mese)
+        }
+
+        // Filtro per mese (funziona solo se anno è impostato)
+        if ($mese) {
             $query->whereMonth('data_operazione', $mese);
+        }
 
-        if($giorno)
-            $query->whereDay('data_operazione', $giorno);
+        // Filtro per data (formato YYYY-MM-DD)
+        if ($data) {
+            $query->whereDate('data_operazione', $data);
+        }
 
-        if($tag) {
-            $query->join('rel_operazioni_tags', 'operazioni.id', '=', 'rel_operazioni_tags.operazione_id')->where('tag_id', '=', $tag);
+        // Filtro per conto
+        if ($conto_id) {
+            $query->where('conto_id', '=', $conto_id);
+        }
+
+        // Filtro per tag
+        if ($tag) {
+            $query->join('rel_operazioni_tags', 'operazioni.id', '=', 'rel_operazioni_tags.operazione_id')
+                ->where('tag_id', '=', $tag);
         }
 
         return $query;
