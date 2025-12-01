@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ContiApiController;
 use App\Http\Controllers\Api\OperazioniApiController;
 use App\Http\Controllers\Api\TagsApiController;
+use App\Http\Controllers\Api\GraficiController;
 
 /*
 |--------------------------------------------------------------------------
@@ -115,6 +116,18 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     Route::get('tags/{id}', [TagsApiController::class, 'show']);
     Route::put('tags/{id}', [TagsApiController::class, 'update']);
     Route::delete('tags/{id}', [TagsApiController::class, 'destroy']);
+
+
+    // ============================================================
+    // GRAFICI ROUTES
+    // ============================================================
+    Route::prefix('grafici')->group(function () {
+        Route::get('spese-per-tag', [GraficiController::class, 'spesePerTag']);
+
+        // Qui aggiungerai altri endpoint per altri grafici:
+        // Route::get('guadagni-vs-spese', [GraficiController::class, 'guadagniVsSpese']);
+        // Route::get('andamento-saldo', [GraficiController::class, 'andamentoSaldo']);
+    });
 });
 
 /*

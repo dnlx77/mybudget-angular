@@ -34,7 +34,7 @@ class ContiApiController extends Controller
     public function index()
     {
         try {
-            // Recupera tutti i conti con le loro operazioni già caricate
+            // Recupera tutti i conti e calcola i saldi
             $conti = Conto::withSum('operazioni', 'importo')->get();
 
             // Rinomina l'attributo per coerenza

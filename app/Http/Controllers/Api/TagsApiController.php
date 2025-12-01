@@ -23,7 +23,7 @@ class TagsApiController extends Controller
         try {
             // withCount() = aggiunge un campo 'operazioni_count' senza caricare tutte le operazioni
             // È una query ottimizzata (1 query + 1 subquery COUNT)
-            $tags = Tag::withCount('operazioni')->get();
+            $tags = Tag::withCount('operazioni')->orderBy('nome')->get();
 
             return response()->json([
                 'success' => true,
