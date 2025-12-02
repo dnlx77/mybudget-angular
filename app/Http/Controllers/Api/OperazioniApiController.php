@@ -297,11 +297,13 @@ class OperazioniApiController extends Controller
             $operazione = Operazione::findOrFail($id);
 
             $validated = $request->validate([
-                'data_operazione' => 'date',
-                'importo' => 'numeric|regex:/^\d+(\.\d{1,2})?$/',
-                'descrizione' => 'string|max:500',
-                'conto_id' => 'exists:conti,id',
-                'tags' => 'array|exists:tags,id'
+                'data_operazione' => 'required|date',
+                'importo' => 'required|numeric',
+                'descrizione' => 'nullable|string|max:500',
+                'conto_id' => 'required|exists:conti,id',
+                'conto_destinazione_id' => 'nullable|exists:conti,id',  // ← Nuovo!
+                'tags' => 'required|array|min:1',        // ← Obbligatorio con almeno 1
+                'tags.*' => 'exists:tags,id'
             ]);
 
             // Separa i tags

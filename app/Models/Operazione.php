@@ -20,7 +20,7 @@ class Operazione extends Model
     ];
 
     public function tags() {
-        return $this->belongsToMany(Tag::class, 'rel_operazioni_tags');
+        return $this->belongsToMany(Tag::class, 'rel_operazioni_tags')->withTimestamps();
     }
 
     public function conto() {
