@@ -123,10 +123,8 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     // ============================================================
     Route::prefix('grafici')->group(function () {
         Route::get('spese-per-tag', [GraficiController::class, 'spesePerTag']);
-
-        // Qui aggiungerai altri endpoint per altri grafici:
-        // Route::get('guadagni-vs-spese', [GraficiController::class, 'guadagniVsSpese']);
-        // Route::get('andamento-saldo', [GraficiController::class, 'andamentoSaldo']);
+        Route::get('guadagni-vs-spese', [GraficiController::class, 'guadagniVsSpese']);
+        Route::get('andamento-saldo', [GraficiController::class, 'andamentoSaldo']);
     });
 });
 
