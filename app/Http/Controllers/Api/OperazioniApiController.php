@@ -6,43 +6,21 @@ use App\Http\Controllers\Controller;
 use App\Models\Operazione;
 use App\Models\Conto;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
-/**
- * OperazioniApiController - API REST per gestione Operazioni (Transazioni)
- * 
- * Operazioni sono il core dell'app: ogni transazione finanziaria.
- * Hanno relazioni complesse: belongsTo Conto, belongsToMany Tags
- */
 class OperazioniApiController extends Controller
 {
     /**
      * GET /api/operazioni
-     * Recupera operazioni con filtri opzionali
-     * 
-     * Query parameters opzionali:
-     * - anno: filtra per anno
-     * - mese: filtra per mese (1-12)
-     * - giorno: filtra per giorno
-     * - tag: filtra per tag_id
-     * - conto: filtra per conto_id
-     * 
-     * PERCHÉ query parameters e non body?
-     * - GET requests non dovrebbero avere body
-     * - I parametri diventano parte dell'URL: /api/operazioni?anno=2025&conto=1
-     * - Facili da testare nel browser
-     * 
-     * PERCHÉ usiamo gli scopes che hai già definito?
-     * - DRY principle: codice già scritto e testato
-     * - Logica di filtro centralizzata nel Model
      */
     public function index(Request $request)
     {
         try {
             $query = Operazione::with(['conto', 'tags']);
 
-            // Applica i filtri usando lo scope
-            if ($request->filled('anno') || $request->filled('mese') || $request->filled('data') ||
-                $request->filled('conto_id') || $request->filled('tag')) {
+            // Applica filtri (identico all'originale)
+            if ($request->anyFilled(['anno', 'mese', 'data', 'conto_id', 'tag'])) {
                 $query->cercaOperazioniAvanzato(
                     $request->input('data'),
                     $request->input('conto_id'),
@@ -52,12 +30,14 @@ class OperazioniApiController extends Controller
                 );
             }
 
-            // Pagina (default 1, per_page default 50)
             $perPage = $request->input('per_page', 50);
             $page = $request->input('page', 1);
 
-            $operazioni = $query->orderBy('data_operazione', 'desc')->orderBy('id', 'desc')->paginate($perPage, ['*'], 'page', $page);
+            $operazioni = $query->orderBy('data_operazione', 'desc')
+                ->orderBy('id', 'desc')
+                ->paginate($perPage, ['*'], 'page', $page);
 
+            // Risposta strutturata esattamente come l'originale
             return response()->json([
                 'success' => true,
                 'data' => $operazioni->items(),
@@ -82,48 +62,24 @@ class OperazioniApiController extends Controller
 
     /**
      * POST /api/operazioni
-     * Crea una nuova operazione (semplice o trasferimento)
-     * 
-     * Payload di Angular:
-     * {
-     *   "data_operazione": "2025-11-08",
-     *   "importo": 50.00,
-     *   "descrizione": "Spesa al supermercato",
-     *   "conto_id": 1,
-     *   "tags": [1, 2, 3]  <- Array di tag IDs
-     * }
-     * SCENARIO 2: Trasferimento tra Conti
-     * ===================================
-     * Payload di Angular:
-     * {
-     *   "data_operazione": "2025-11-09",
-     *   "importo": 500,
-     *   "descrizione": "Trasferimento risparmio",
-     *   "conto_id": 1,
-     *   "conto_destinazione_id": 2,
-     *   "tags": [2, 4]
-     * }
-     * 
-     * NOTA: 'tags' non è un campo DB, ma una relazione many-to-many
-     * Dobbiamo gestirla DOPO aver creato l'operazione
      */
     public function store(Request $request)
     {
         try {
-            // Validazione base
+            // 1. Validazione (Tags REQUIRED come da originale)
             $validated = $request->validate([
                 'data_operazione' => 'required|date',
                 'importo' => 'required|numeric',
                 'descrizione' => 'nullable|string|max:500',
                 'conto_id' => 'required|exists:conti,id',
-                'conto_destinazione_id' => 'nullable|exists:conti,id',  // ← Nuovo!
-                'tags' => 'required|array|min:1',        // ← Obbligatorio con almeno 1
+                'conto_destinazione_id' => 'nullable|different:conto_id|exists:conti,id',
+                'tags' => 'required|array|min:1', // <-- RIPRISTINATO REQUIRED
                 'tags.*' => 'exists:tags,id'
             ]);
 
-            // Validazione aggiuntiva: conto_destinazione_id deve essere diverso da conto_id
+            // 2. Controllo coerenza destinazione (come originale)
             if (
-                $validated['conto_destinazione_id'] &&
+                !empty($validated['conto_destinazione_id']) &&
                 $validated['conto_destinazione_id'] == $validated['conto_id']
             ) {
                 return response()->json([
@@ -133,318 +89,202 @@ class OperazioniApiController extends Controller
                 ], 422);
             }
 
-            // Separa i tags
-            $tags = $validated['tags'] ?? [];
-            unset($validated['tags']);
+            // 3. Separazione Tags (IMPORTANTE: evitare errore column not found)
+            $tags = $validated['tags'];
+            unset($validated['tags']); // <-- FONDAMENTALE
 
-            // Determina se è trasferimento
-            $isTransferimento = !empty($validated['conto_destinazione_id']);
+            $isTrasferimento = !empty($validated['conto_destinazione_id']);
 
-            if ($isTransferimento) {
-                // ============================================================
-                // CASO: TRASFERIMENTO (2 operazioni)
-                // ============================================================
+            return DB::transaction(function () use ($validated, $tags, $isTrasferimento) {
 
-                // Recupera i nomi dei conti dal DB
-                $contoOrigine = Conto::find($validated['conto_id']);
-                $contoDestinazione = Conto::find($validated['conto_destinazione_id']);
+                if ($isTrasferimento) {
+                    // --- CASO TRASFERIMENTO ---
+                    $transferUuid = Str::uuid();
+                    $importo = abs($validated['importo']); // Normalizziamo
 
-                // Calcola gli importi
-                $importoAssoluto = abs($validated['importo']);  // Valore assoluto (sempre positivo)
-                $importoOrigine = -$importoAssoluto;             // Negativo per il conto di origine
-                $importoDestinazione = $importoAssoluto;         // Positivo per il conto di destinazione
+                    // 🟢 RECUPERO NOMI CONTI PER DESCRIZIONE PARLANTE 🟢
+                    $contoOrigine = Conto::find($validated['conto_id']);
+                    $contoDestinazione = Conto::find($validated['conto_destinazione_id']);
 
-                // Crea la descrizione con i nomi dei conti
-                $descrizioneConTrasferimento = $validated['descrizione'] .
-                    " (Trasferimento da " . $contoOrigine->nome .
-                    " a " . $contoDestinazione->nome . ")";
+                    $nomeOrigine = $contoOrigine ? $contoOrigine->nome : '???';
+                    $nomeDestinazione = $contoDestinazione ? $contoDestinazione->nome : '???';
 
-                // Crea PRIMA operazione (conto di origine - ADDEBITO)
-                $operazione1 = Operazione::create([
-                    'data_operazione' => $validated['data_operazione'],
-                    'importo' => $importoOrigine,           // ← Negativo
-                    'descrizione' => $descrizioneConTrasferimento,
-                    'conto_id' => $validated['conto_id'],
-                    'trasferimento' => 'T'                  // ← Trasferimento
-                ]);
+                    // Costruisco la dicitura: (Trasferimento da A a B)
+                    $dicituraTransfer = "(Trasferimento da {$nomeOrigine} a {$nomeDestinazione})";
 
-                // Assegna i tags alla prima operazione
-                if (!empty($tags)) {
-                    $operazione1->tags()->sync($tags);
+                    // Metto la dicitura DOPO della descrizione utente (se presente)
+                    $descrizioneFinale = $validated['descrizione']
+                        ? $validated['descrizione']. " ". $dicituraTransfer
+                        : $dicituraTransfer;
+
+                    // Rimuoviamo conto_destinazione_id dai dati da salvare nell'operazione 1
+                    unset($validated['conto_destinazione_id']);
+
+                    // 1. Uscita (Negativa)
+                    // Usiamo array_merge per sovrascrivere i campi necessari
+                    $op1 = Operazione::create(array_merge($validated, [
+                        'importo' => -$importo,
+                        'descrizione' => $descrizioneFinale, // ⬅️ Usa la nuova descrizione
+                        'trasferimento' => 'T',
+                        'transfer_code' => $transferUuid
+                    ]));
+                    $op1->tags()->sync($tags);
+
+                    // 2. Entrata (Positiva)
+                    $op2 = Operazione::create(array_merge($validated, [
+                        'importo' => $importo,
+                        'conto_id' => request('conto_destinazione_id'), // Recuperiamo la destinazione originale
+                        'descrizione' => $descrizioneFinale, // ⬅️ Usa la nuova descrizione
+                        'trasferimento' => 'T',
+                        'transfer_code' => $transferUuid
+                    ]));
+                    $op2->tags()->sync($tags);
+
+                    // Ricarica relazioni
+                    $op1->load(['tags', 'conto']);
+                    $op2->load(['tags', 'conto']);
+
+                    return response()->json([
+                        'success' => true,
+                        'data' => [
+                            'operazione_origine' => $op1,
+                            'operazione_destinazione' => $op2
+                        ],
+                        'message' => 'Trasferimento creato con successo',
+                        'trasferimento' => true
+                    ], 201);
+                } else {
+                    // --- CASO NORMALE ---
+                    // Pulizia campi non necessari
+                    unset($validated['conto_destinazione_id']);
+
+                    $op = Operazione::create(array_merge($validated, [
+                        'trasferimento' => 'N',
+                        'transfer_code' => null
+                    ]));
+
+                    $op->tags()->sync($tags);
+                    $op->load(['tags', 'conto']);
+
+                    return response()->json([
+                        'success' => true,
+                        'data' => $op,
+                        'message' => 'Operazione creata con successo',
+                        'trasferimento' => false
+                    ], 201);
                 }
-
-                // Crea SECONDA operazione (conto di destinazione - ACCREDITO)
-                $operazione2 = Operazione::create([
-                    'data_operazione' => $validated['data_operazione'],
-                    'importo' => $importoDestinazione,      // ← Positivo
-                    'descrizione' => $descrizioneConTrasferimento,
-                    'conto_id' => $validated['conto_destinazione_id'],
-                    'trasferimento' => 'T'                  // ← Trasferimento
-                ]);
-
-                // Assegna i tags alla seconda operazione
-                if (!empty($tags)) {
-                    $operazione2->tags()->sync($tags);
-                }
-
-                // Ricarica entrambe le operazioni con relazioni
-                $operazione1->load(['tags', 'conto']);
-                $operazione2->load(['tags', 'conto']);
-
-                // Ritorna entrambe le operazioni create
-                return response()->json([
-                    'success' => true,
-                    'data' => [
-                        'operazione_origine' => $operazione1,
-                        'operazione_destinazione' => $operazione2
-                    ],
-                    'message' => 'Trasferimento creato con successo (2 operazioni inserite)',
-                    'trasferimento' => true
-                ], 201);
-            } else {
-                // ============================================================
-                // CASO: OPERAZIONE SEMPLICE (1 operazione)
-                // ============================================================
-
-                // Rimuovi il campo conto_destinazione_id dal validated
-                unset($validated['conto_destinazione_id']);
-
-                // Aggiungi il campo trasferimento
-                $validated['trasferimento'] = 'N';  // ← Non è un trasferimento
-
-                // Crea l'operazione
-                $operazione = Operazione::create($validated);
-
-                // Assegna i tags
-                if (!empty($tags)) {
-                    $operazione->tags()->sync($tags);
-                }
-
-                // Ricarica con relazioni
-                $operazione->load(['tags', 'conto']);
-
-                // Ritorna l'operazione creata
-                return response()->json([
-                    'success' => true,
-                    'data' => $operazione,
-                    'message' => 'Operazione creata con successo',
-                    'trasferimento' => false
-                ], 201);
-            }
+            });
         } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'errors' => $e->errors(),
-                'message' => 'Errore di validazione'
-            ], 422);
+            return response()->json(['success' => false, 'errors' => $e->errors(), 'message' => 'Errore di validazione'], 422);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Errore nella creazione dell\'operazione: ' . $e->getMessage(),
-                'code' => 500
-            ], 500);
-        }
-    }
-
-    /**
-     * GET /api/operazioni/{id}
-     * Recupera una singola operazione con tutti i dettagli
-     */
-    public function show($id)
-    {
-        try {
-            $operazione = Operazione::with(['conto', 'tags'])
-                ->findOrFail($id);
-
-            return response()->json([
-                'success' => true,
-                'data' => $operazione,
-                'message' => 'Operazione recuperata con successo'
-            ]);
-
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Operazione non trovata',
-                'code' => 404
-            ], 404);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Errore nel recupero dell\'operazione: ' . $e->getMessage(),
-                'code' => 500
-            ], 500);
+            return response()->json(['success' => false, 'error' => 'Errore nella creazione: ' . $e->getMessage(), 'code' => 500], 500);
         }
     }
 
     /**
      * PUT /api/operazioni/{id}
-     * Aggiorna un'operazione esistente
-     * 
-     * Payload (tuti i campi opzionali tranne quelli non modificabili):
-     * {
-     *   "data_operazione": "2025-11-09",
-     *   "importo": 75.00,
-     *   "descrizione": "Nuova descrizione",
-     *   "conto_id": 2,
-     *   "tags": [1, 3]
-     * }
      */
     public function update(Request $request, $id)
     {
         try {
             $operazione = Operazione::findOrFail($id);
 
+            // Validazione (Tags REQUIRED come da originale)
             $validated = $request->validate([
                 'data_operazione' => 'required|date',
                 'importo' => 'required|numeric',
                 'descrizione' => 'nullable|string|max:500',
                 'conto_id' => 'required|exists:conti,id',
-                'conto_destinazione_id' => 'nullable|exists:conti,id',  // ← Nuovo!
-                'tags' => 'required|array|min:1',        // ← Obbligatorio con almeno 1
+                'tags' => 'required|array|min:1', // <-- RIPRISTINATO REQUIRED
                 'tags.*' => 'exists:tags,id'
             ]);
 
-            // Separa i tags
-            $tags = $validated['tags'] ?? null;
-            unset($validated['tags']);
+            // Separazione tags
+            $tags = $validated['tags'];
+            unset($validated['tags']); // <-- FONDAMENTALE
 
-            // Aggiorna i campi
-            $operazione->update($validated);
-
-            // Aggiorna i tags se forniti
-            if ($tags !== null) {
+            return DB::transaction(function () use ($operazione, $validated, $tags) {
+                // Aggiorniamo l'operazione corrente
+                $operazione->update($validated);
                 $operazione->tags()->sync($tags);
-            }
 
-            // Ricarica per la risposta
-            $operazione->load(['tags', 'conto']);
+                // Sincronizzazione Gemella (se esiste)
+                if ($operazione->trasferimento === 'T' && $operazione->transfer_code) {
+                    $gemella = Operazione::where('transfer_code', $operazione->transfer_code)
+                        ->where('id', '!=', $operazione->id)
+                        ->first();
 
-            return response()->json([
-                'success' => true,
-                'data' => $operazione,
-                'message' => 'Operazione aggiornata con successo'
-            ]);
+                    if ($gemella) {
+                        $gemella->update([
+                            'data_operazione' => $validated['data_operazione'],
+                            'importo' => -$validated['importo'], // Segno invertito
+                            'descrizione' => $validated['descrizione'], // Propaghiamo descrizione
+                        ]);
+                        $gemella->tags()->sync($tags); // Propaghiamo tags
+                    }
+                }
 
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Operazione non trovata',
-                'code' => 404
-            ], 404);
+                $operazione->load(['conto', 'tags']);
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'errors' => $e->errors(),
-                'message' => 'Errore di validazione'
-            ], 422);
-
+                return response()->json([
+                    'success' => true,
+                    'data' => $operazione,
+                    'message' => 'Operazione aggiornata con successo'
+                ]);
+            });
+        } catch (\Illuminate\Validation\ValidationException $e) { // Aggiunto catch specifico validation
+            return response()->json(['success' => false, 'errors' => $e->errors(), 'message' => 'Errore di validazione'], 422);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Errore nell\'aggiornamento dell\'operazione: ' . $e->getMessage(),
-                'code' => 500
-            ], 500);
+            return response()->json(['success' => false, 'error' => $e->getMessage(), 'code' => 500], 500);
         }
     }
 
     /**
      * DELETE /api/operazioni/{id}
-     * Cancella un'operazione
-     * 
-     * IMPORTANTE: Quando cancelli un'operazione:
-     * - La relazione many-to-many (tags) viene gestita automaticamente
-     *   da Laravel se hai configurato correttamente la migration
-     * - Usa softDelete se vuoi mantenere un audit trail
      */
     public function destroy($id)
     {
         try {
-            $operazione = Operazione::findOrFail($id);
-            
-            // Stacca tutti i tags prima di cancellare (optional ma pulito)
-            $operazione->tags()->detach();
-            
-            $operazione->delete();
+            return DB::transaction(function () use ($id) {
+                $operazione = Operazione::findOrFail($id);
+                $message = "Operazione cancellata con successo";
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Operazione cancellata con successo',
-                'data' => ['id' => $id]
-            ]);
+                if ($operazione->trasferimento === 'T' && $operazione->transfer_code) {
+                    // Cancella tutte le operazioni collegate (anche la gemella)
+                    Operazione::where('transfer_code', $operazione->transfer_code)->delete();
+                    // Nota: detach dei tags avviene automaticamente se il DB ha foreign key cascade, 
+                    // altrimenti Laravel Model event potrebbe gestirlo. 
+                    // Per sicurezza, se non hai cascade nel DB, detach non serve su delete multiplo builder,
+                    // ma serve se iteri. Con ->delete() sul builder è veloce.
+                } else {
+                    $operazione->tags()->detach();
+                    $operazione->delete();
+                }
 
+                return response()->json([
+                    'success' => true,
+                    'message' => $message,
+                    'data' => ['id' => $id]
+                ]);
+            });
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Operazione non trovata',
-                'code' => 404
-            ], 404);
-
+            return response()->json(['success' => false, 'error' => 'Operazione non trovata', 'code' => 404], 404);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Errore nella cancellazione dell\'operazione: ' . $e->getMessage(),
-                'code' => 500
-            ], 500);
-        }
-    }
-
-    /**
-     * GET /api/operazioni/filtro/avanzato
-     * Endpoint speciale per filtri avanzati (opzionale)
-     * 
-     * PERCHÉ un endpoint separato?
-     * - Non necessario per il tuo caso, ma utile per query complesse
-     * - /api/operazioni?anno=2025&mese=11 è già abbastanza
-     * 
-     * Lo includevo per completezza
-     */
-    public function filtroAvanzato(Request $request)
-    {
-        try {
-            $operazioni = Operazione::with(['conto', 'tags'])
-                ->cercaOperazioniAvanzato(
-                    $request->input('anno'),
-                    $request->input('mese'),
-                    $request->input('giorno'),
-                    $request->input('tag'),
-                    $request->input('conto')
-                )
-                ->orderBy('data_operazione', 'desc')
-                ->get();
-
-            return response()->json([
-                'success' => true,
-                'data' => $operazioni,
-                'count' => $operazioni->count()
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Errore nei filtri: ' . $e->getMessage(),
-                'code' => 500
-            ], 500);
+            return response()->json(['success' => false, 'error' => $e->getMessage(), 'code' => 500], 500);
         }
     }
 
     /**
      * GET /api/v1/operazioni/statistiche/totali
-     * Ritorna guadagni, spese e saldo TOTALI con filtri
-     * Esclude i trasferimenti (campo trasferimento = 'T')
+     * Versione OTTIMIZZATA ma con LOGICA ORIGINALE per i trasferimenti
      */
     public function statisticheTotali(Request $request)
     {
         try {
             $query = Operazione::query();
 
-            // Applica gli stessi filtri del index()
-            if (
-                $request->filled('anno') || $request->filled('mese') || $request->filled('data') ||
-                $request->filled('conto_id') || $request->filled('tag')
-            ) {
+            // 1. Applica filtri (identico all'index)
+            if ($request->anyFilled(['anno', 'mese', 'data', 'conto_id', 'tag'])) {
                 $query->cercaOperazioniAvanzato(
                     $request->input('data'),
                     $request->input('conto_id'),
@@ -454,25 +294,28 @@ class OperazioniApiController extends Controller
                 );
             }
 
-            // Esclude i trasferimenti se non è selezionato un conto
-            if(!($request->has('conto_id') && $request->input('conto_id'))) {
+            // 2. Logica esclusione trasferimenti (IDENTICA all'originale)
+            // Se non è selezionato un conto specifico, escludi i trasferimenti
+            if (!($request->has('conto_id') && $request->input('conto_id'))) {
                 $query->where('trasferimento', '!=', 'T');
             }
 
-            // Recupera TUTTE le operazioni (senza paginazione)
-            $operazioni = $query->get();
+            // 3. Calcoli ottimizzati (SQL invece di RAM)
+            $guadagno = (clone $query)->where('importo', '>', 0)->sum('importo');
+            $spese = (clone $query)->where('importo', '<', 0)->sum('importo');
 
-            // Calcola statistiche
-            $guadagno = $operazioni->where('importo', '>', 0)->sum('importo');
-            $spese = $operazioni->where('importo', '<', 0)->sum('importo');
-            $spese = abs($spese);
-            $saldo = $guadagno - $spese;
+            // $spese viene restituito negativo dal DB (es. -100), ne prendiamo il valore assoluto
+            $speseAbs = abs($spese);
+
+            // Il saldo è la somma algebrica (es. 500 + (-100) = 400)
+            // Nota: se usi brick/money o simili, qui la logica cambierebbe, ma per ora usiamo i float/decimal del DB
+            $saldo = $guadagno + $spese;
 
             return response()->json([
                 'success' => true,
                 'data' => [
                     'guadagno' => $guadagno,
-                    'spese' => $spese,
+                    'spese' => $speseAbs,
                     'saldo' => $saldo,
                 ],
                 'message' => 'Statistiche calcolate'
@@ -482,6 +325,25 @@ class OperazioniApiController extends Controller
                 'success' => false,
                 'error' => 'Errore: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * GET /api/operazioni/{id}
+     */
+    public function show($id)
+    {
+        try {
+            $operazione = Operazione::with(['conto', 'tags'])->findOrFail($id);
+            return response()->json([
+                'success' => true,
+                'data' => $operazione,
+                'message' => 'Operazione recuperata con successo'
+            ]);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'error' => 'Operazione non trovata', 'code' => 404], 404);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'error' => 'Errore: ' . $e->getMessage(), 'code' => 500], 500);
         }
     }
 }

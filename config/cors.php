@@ -1,25 +1,14 @@
 <?php
 
 return [
-
-    /*
-    |--------------------------------------------------------------------------
-    | Cross-Origin Resource Sharing (CORS) Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Here you may configure your settings for cross-origin resource sharing
-    | or "CORS". This determines what cross-origin operations may execute
-    | in web browsers. You are free to adjust these settings as needed.
-    |
-    | To learn more: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-    |
-    */
-
     'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['http://localhost:4200', '*'],
+    // ⚠️ IMPORTANTE: Solo l'URL del tuo frontend, SENZA slash finale
+    'allowed_origins' => [
+        'http://localhost:4200',
+    ],
 
     'allowed_origins_patterns' => [],
 
@@ -29,6 +18,6 @@ return [
 
     'max_age' => 0,
 
-    'supports_credentials' => false,
-
+    // ⚠️ FONDAMENTALE: Deve essere true per Angular+Laravel
+    'supports_credentials' => true,
 ];

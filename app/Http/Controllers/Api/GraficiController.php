@@ -4,400 +4,323 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use App\Models\Operazione;
 use App\Models\Conto;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class GraficiController extends Controller
 {
     /**
-     * Spese aggregate per tag con filtri personalizzabili
-     * Mostra top 10 categorie + raggruppa il resto in "Altri"
-     * 
-     * Query parameters:
-     * - data_inizio: Data di inizio periodo (formato: Y-m-d, default: 30 giorni fa)
-     * - data_fine: Data di fine periodo (formato: Y-m-d, default: oggi)
-     * 
-     * @param Request $request
-     * @return \Illuminate\Http\JsonResponse
+     * Helper privato per calcolare il periodo corretto.
+     * LOGICA SMART: Se la data inizio è molto vecchia (< 2000), 
+     * assume che l'utente voglia "Tutto" e cerca la prima operazione nel DB.
      */
+    private function getPeriodo(Request $request)
+    {
+        $dataInizio = $request->input('data_inizio')
+            ? Carbon::parse($request->input('data_inizio'))->startOfDay()
+            : Carbon::now()->subDays(30)->startOfDay();
+
+        $dataFine = $request->input('data_fine')
+            ? Carbon::parse($request->input('data_fine'))->endOfDay()
+            : Carbon::now()->endOfDay();
+
+        // CLAMPING: Se l'anno è < 2000 (es. 1970), cerca la data minima reale
+        if ($dataInizio->year < 2000) {
+            $minDate = Operazione::min('data_operazione');
+            if ($minDate) {
+                $dataInizio = Carbon::parse($minDate)->startOfDay();
+            }
+        }
+
+        return [$dataInizio, $dataFine];
+    }
+
+    private function applicaFiltri($query, $request)
+    {
+        $contoId = $request->input('conto_id');
+        if ($contoId && $contoId !== 'null' && $contoId !== 'undefined') {
+            $query->where('conto_id', $contoId);
+        }
+
+        $tagIds = $request->input('tag_ids');
+        if (!empty($tagIds)) {
+            if (is_string($tagIds)) $tagIds = explode(',', $tagIds);
+            $query->whereHas('tags', function ($q) use ($tagIds) {
+                $q->whereIn('tags.id', $tagIds);
+            });
+        }
+    }
+
     public function spesePerTag(Request $request)
     {
         try {
-            // ============================================================
-            // PARSING FILTRI CON DEFAULT
-            // ============================================================
+            [$dataInizio, $dataFine] = $this->getPeriodo($request);
 
-            $dataInizio = $request->input('data_inizio')
-                ? Carbon::parse($request->input('data_inizio'))->startOfDay()
-                : Carbon::now()->subDays(30)->startOfDay();
+            $query = Operazione::with('tags')
+                ->where('importo', '<', 0)
+                ->where('trasferimento', 'N')
+                ->whereBetween('data_operazione', [$dataInizio, $dataFine]);
 
-            $dataFine = $request->input('data_fine')
-                ? Carbon::parse($request->input('data_fine'))->endOfDay()
-                : Carbon::now()->endOfDay();
+            $this->applicaFiltri($query, $request);
 
-            // ⬇️ GESTIONE ROBUSTA DI conto_id
-            $contoIdRaw = $request->input('conto_id');
+            $operazioni = $query->get();
+            $spesePerTag = [];
+            $totaleGenerale = 0;
 
-            // Normalizza: converti 'undefined', 'null', '', 0 a null
-            $contoId = null;
-            if (
-                $contoIdRaw !== null &&
-                $contoIdRaw !== '' &&
-                $contoIdRaw !== 'undefined' &&
-                $contoIdRaw !== 'null'
-            ) {
-                $contoId = (int) $contoIdRaw;
-                // Se dopo la conversione è 0, trattalo come null
-                if ($contoId === 0) {
-                    $contoId = null;
+            $filterTagIds = $request->input('tag_ids');
+            if (is_string($filterTagIds)) $filterTagIds = explode(',', $filterTagIds);
+
+            foreach ($operazioni as $op) {
+                $importo = abs($op->importo);
+                $tagsDaContare = $op->tags;
+
+                if (!empty($filterTagIds)) {
+                    $tagsDaContare = $tagsDaContare->whereIn('id', $filterTagIds);
+                }
+
+                if ($tagsDaContare->isEmpty()) {
+                    if (empty($filterTagIds)) {
+                        $key = 'Nessun Tag';
+                        if (!isset($spesePerTag[$key])) $spesePerTag[$key] = ['nome' => $key, 'totale' => 0, 'num_operazioni' => 0];
+                        $spesePerTag[$key]['totale'] += $importo;
+                        $spesePerTag[$key]['num_operazioni']++;
+                        $totaleGenerale += $importo;
+                    }
+                } else {
+                    $totaleGenerale += $importo;
+                    foreach ($tagsDaContare as $tag) {
+                        $key = $tag->nome;
+                        if (!isset($spesePerTag[$key])) $spesePerTag[$key] = ['nome' => $key, 'totale' => 0, 'num_operazioni' => 0];
+                        $spesePerTag[$key]['totale'] += $importo;
+                        $spesePerTag[$key]['num_operazioni']++;
+                    }
                 }
             }
 
-            // ============================================================
-            // 1. CALCOLA TOTALE GENERALE
-            // ============================================================
+            usort($spesePerTag, fn($a, $b) => $b['totale'] <=> $a['totale']);
 
-            $queryTotale = DB::table('operazioni')
-                ->where('importo', '<', 0)
-                ->whereBetween('data_operazione', [$dataInizio, $dataFine]);
+            $limit = 9;
+            $chartData = [];
+            $useOther = empty($filterTagIds) || count($filterTagIds) > $limit;
 
-            // ⬇️ LOGICA CONDIZIONALE: Escludi trasferimenti solo se NON c'è filtro conto
-            if (!$contoId) {
-                $queryTotale->where('trasferimento', 'N');  // Escludi trasferimenti (visione globale)
+            if ($useOther && count($spesePerTag) > $limit) {
+                $chartData = array_slice($spesePerTag, 0, $limit);
+                $others = array_slice($spesePerTag, $limit);
+                $totaleAltro = 0;
+                $opsAltro = 0;
+                foreach ($others as $item) {
+                    $totaleAltro += $item['totale'];
+                    $opsAltro += $item['num_operazioni'];
+                }
+                if ($totaleAltro > 0) {
+                    $chartData[] = ['nome' => 'Altro', 'totale' => $totaleAltro, 'num_operazioni' => $opsAltro];
+                }
             } else {
-                $queryTotale->where('conto_id', $contoId);  // Filtra per conto specifico
+                $chartData = $spesePerTag;
             }
-
-            $totaleGenerale = $queryTotale->sum(DB::raw('ABS(importo)'));
-            $totaleGenerale = $totaleGenerale ?? 0;
-
-            // ============================================================
-            // 2. QUERY SPESE PER TAG
-            // ============================================================
-
-            $querySpese = DB::table('operazioni')
-                ->join('rel_operazioni_tags', 'operazioni.id', '=', 'rel_operazioni_tags.operazione_id')
-                ->join('tags', 'rel_operazioni_tags.tag_id', '=', 'tags.id')
-                ->where('operazioni.importo', '<', 0)
-                ->whereBetween('operazioni.data_operazione', [$dataInizio, $dataFine]);
-
-            // ⬇️ LOGICA CONDIZIONALE: Escludi trasferimenti solo se NON c'è filtro conto
-            if (!$contoId) {
-                $querySpese->where('operazioni.trasferimento', 'N');  // Escludi trasferimenti (visione globale)
-            } else {
-                $querySpese->where('operazioni.conto_id', $contoId);  // Filtra per conto specifico
-            }
-
-            $tutteLeSpesePerTag = $querySpese
-                ->select(
-                    'tags.nome',
-                    'tags.id',
-                    DB::raw('SUM(ABS(operazioni.importo)) as totale'),
-                    DB::raw('COUNT(DISTINCT operazioni.id) as num_operazioni')
-                )
-                ->groupBy('tags.id', 'tags.nome')
-                ->orderBy('totale', 'DESC')
-                ->get();
-
-            // ============================================================
-            // 3. RAGGRUPPA TOP 10 + ALTRI
-            // ============================================================
-
-            $top10 = $tutteLeSpesePerTag->take(10);
-            $altri = $tutteLeSpesePerTag->skip(10);
-            $spese = $top10->values()->toArray();
-
-            if ($altri->count() > 0) {
-                $spese[] = [
-                    'id' => 0,
-                    'nome' => 'Altri',
-                    'totale' => $altri->sum('totale'),
-                    'num_operazioni' => $altri->sum('num_operazioni')
-                ];
-            }
-
-            // ============================================================
-            // 4. RISPOSTA JSON
-            // ============================================================
 
             return response()->json([
                 'success' => true,
-                'data' => $spese,
+                'data' => $chartData,
+                'totale_generale' => $totaleGenerale,
                 'filtri' => [
-                    'data_inizio' => $dataInizio->format('Y-m-d'),
-                    'data_fine' => $dataFine->format('Y-m-d'),
-                    'giorni' => (int) $dataInizio->diffInDays($dataFine)
-                ],
-                'totale_generale' => $totaleGenerale,  // ⬅️ Totale CORRETTO (senza duplicati)
-                'totale_distribuito' => $tutteLeSpesePerTag->sum('totale'),  // ⬅️ Totale della distribuzione (può essere > del reale)
-                'num_categorie_totali' => $tutteLeSpesePerTag->count(),
-                'num_categorie_mostrate' => count($spese)
+                    'giorni' => $dataInizio->diffInDays($dataFine),
+                    'inizio' => $dataInizio->format('Y-m-d'),
+                    'fine' => $dataFine->format('Y-m-d')
+                ]
             ]);
         } catch (\Exception $e) {
-            logger()->error('Errore in spesePerTag', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine()
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'error' => $e->getMessage(),
-                'line' => $e->getLine()
-            ], 500);
+            return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
         }
     }
 
-    /**
-     * GET /api/v1/grafici/guadagni-spese
-     * 
-     * Confronto mensile: guadagni (entrate) vs spese (uscite)
-     * 
-     * Query parameters:
-     * - data_inizio: 2025-01-01
-     * - data_fine: 2025-12-31
-     * - conto_id: (opzionale) filtra per conto
-     * - tags: id1,id2,id3 (opzionale) filtra per tag
-     */
     public function guadagniVsSpese(Request $request)
     {
         try {
-            // ============================================================
-            // PARSING FILTRI
-            // ============================================================
-            $dataInizio = $request->input('data_inizio')
-                ? Carbon::parse($request->input('data_inizio'))->startOfDay()
-                : Carbon::now()->subMonths(12)->startOfDay();
+            [$dataInizio, $dataFine] = $this->getPeriodo($request);
 
-            $dataFine = $request->input('data_fine')
-                ? Carbon::parse($request->input('data_fine'))->endOfDay()
-                : Carbon::now()->endOfDay();
+            // 1. Determina Scala
+            $diffGiorni = $dataInizio->diffInDays($dataFine);
 
-            // Normalizza conto_id
-            $contoIdRaw = $request->input('conto_id');
-            $contoId = null;
-            if (
-                $contoIdRaw !== null &&
-                $contoIdRaw !== '' &&
-                $contoIdRaw !== 'undefined' &&
-                $contoIdRaw !== 'null'
-            ) {
-                $contoId = (int) $contoIdRaw;
-                if ($contoId === 0) {
-                    $contoId = null;
-                }
+            $groupByFormat = 'Y-m-d'; // Default: Giorno
+            $labelFormat = 'd/m';
+            $addMethod = 'addDay';
+            $startMethod = null;
+
+            if ($diffGiorni > 730) { // > 2 Anni -> ANNUALE
+                $groupByFormat = 'Y';
+                $labelFormat = 'Y';
+                $addMethod = 'addYear';
+                $startMethod = 'startOfYear';
+            } elseif ($diffGiorni > 60) { // > 2 Mesi -> MENSILE
+                $groupByFormat = 'Y-m';
+                $labelFormat = 'M Y'; // es. Jan 2024
+                $addMethod = 'addMonth';
+                $startMethod = 'startOfMonth';
             }
 
-            // ============================================================
-            // QUERY: Guadagni e Spese per mese
-            // ============================================================
-            $query = Operazione::selectRaw('
-            DATE_FORMAT(data_operazione, "%Y-%m") as mese,
-            COALESCE(SUM(CASE WHEN importo > 0 THEN importo ELSE 0 END), 0) as guadagni,
-            COALESCE(SUM(CASE WHEN importo < 0 THEN ABS(importo) ELSE 0 END), 0) as spese
-        ')
-                //->where('trasferimento', 'N')  // ⬅️ SEMPRE escludi trasferimenti
+            // 2. Query
+            $query = Operazione::query()
+                ->where('trasferimento', 'N')
                 ->whereBetween('data_operazione', [$dataInizio, $dataFine]);
 
-            // ⭐ LOGICA CONDIZIONALE: Trasferimenti dipendono dal filtro conto
-            if (!$contoId) {
-                // Visione globale: escludi trasferimenti per evitare duplicati
-                $query->where('trasferimento', 'N');
-            }
-            // Se conto_id è presente: INCLUDI i trasferimenti (non aggiungo WHERE)
+            $this->applicaFiltri($query, $request);
 
-            // Filtra per conto se specificato
-            if ($contoId) {
-                $query->where('conto_id', $contoId);
-            }
+            $operazioniRaggruppate = $query->get()
+                ->groupBy(function ($op) use ($groupByFormat) {
+                    return Carbon::parse($op->data_operazione)->format($groupByFormat);
+                });
 
-            $dati = $query
-                ->groupByRaw('DATE_FORMAT(data_operazione, "%Y-%m")')
-                ->orderBy('mese', 'ASC')
-                ->get();
+            // 3. Generazione Dati (con riempimento buchi)
+            $chartData = [];
+            $totGuadagni = 0;
+            $totSpese = 0;
 
-            // ============================================================
-            // TRASFORMAZIONE DATI
-            // ============================================================
-            $result = $dati->map(function ($row) {
-                return [
-                    'mese' => $row->mese,
-                    'guadagni' => (float) $row->guadagni,
-                    'spese' => (float) $row->spese,
-                    'saldo_netto' => (float) ($row->guadagni - $row->spese)
+            $cursore = clone $dataInizio;
+            if ($startMethod) $cursore->$startMethod();
+
+            while ($cursore->format($groupByFormat) <= $dataFine->format($groupByFormat)) {
+
+                $chiave = $cursore->format($groupByFormat);
+                $guadagniPeriodo = 0;
+                $spesePeriodo = 0;
+
+                if (isset($operazioniRaggruppate[$chiave])) {
+                    $ops = $operazioniRaggruppate[$chiave];
+                    $guadagniPeriodo = $ops->where('importo', '>', 0)->sum('importo');
+                    $spesePeriodo = abs($ops->where('importo', '<', 0)->sum('importo'));
+                }
+
+                $totGuadagni += $guadagniPeriodo;
+                $totSpese += $spesePeriodo;
+
+                $chartData[] = [
+                    'data' => $cursore->format($labelFormat), // "data" è l'etichetta asse X
+                    'guadagni' => round($guadagniPeriodo, 2),
+                    'spese' => round($spesePeriodo, 2)
                 ];
-            })->values()->toArray();
 
-            // Calcola totali
-            $totaleGuadagni = collect($result)->sum('guadagni');
-            $totaleSpes = collect($result)->sum('spese');
+                $cursore->$addMethod();
+            }
 
             return response()->json([
                 'success' => true,
-                'data' => $result,
-                'filtri' => [
-                    'data_inizio' => $dataInizio->format('Y-m-d'),
-                    'data_fine' => $dataFine->format('Y-m-d'),
-                    'conto_id' => $contoId
-                ],
+                'data' => $chartData,
                 'statistiche' => [
-                    'totale_guadagni' => $totaleGuadagni,
-                    'totale_spese' => $totaleSpes,
-                    'saldo_netto' => $totaleGuadagni - $totaleSpes,
-                    'num_mesi' => count($result)
-                ],
-                'message' => 'Guadagni vs Spese recuperati'
+                    'totale_guadagni' => round($totGuadagni, 2),
+                    'totale_spese' => round($totSpese, 2),
+                    'saldo_netto' => round($totGuadagni - $totSpese, 2)
+                ]
             ]);
         } catch (\Exception $e) {
-            logger()->error('Errore in guadagniVsSpese', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine()
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'error' => $e->getMessage(),
-                'line' => $e->getLine()
-            ], 500);
+            return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
         }
     }
 
-    /**
-     * GET /api/v1/grafici/andamento-saldo
-     * 
-     * Andamento cumulativo del saldo nel tempo
-     * 
-     * Query parameters:
-     * - data_inizio: 2025-01-01
-     * - data_fine: 2025-12-31
-     * - conto_id: (opzionale, obbligatorio per accuratezza saldo iniziale)
-     */
     public function andamentoSaldo(Request $request)
     {
         try {
-            // ============================================================
-            // VALIDAZIONE: conto_id OBBLIGATORIO
-            // ============================================================
-            $contoIdRaw = $request->input('conto_id');
-            $contoId = null;
-            if (
-                $contoIdRaw !== null &&
-                $contoIdRaw !== '' &&
-                $contoIdRaw !== 'undefined' &&
-                $contoIdRaw !== 'null'
-            ) {
-                $contoId = (int) $contoIdRaw;
-                if ($contoId === 0) {
-                    $contoId = null;
-                }
+            // 1. INPUT e Periodo (con logica "Tutto")
+            [$dataInizio, $dataFine] = $this->getPeriodo($request);
+
+            $contoId = $request->input('conto_id');
+            if ($contoId === 'null' || $contoId === 'undefined' || $contoId === '') $contoId = null;
+
+            // 2. DECIDIAMO LA SCALA (Giornaliera / Mensile / Annuale)
+            // Ripristinata logica granulare
+            $diffGiorni = $dataInizio->diffInDays($dataFine);
+
+            $groupByFormat = 'Y-m-d'; // Default: Giornaliero
+            $labelFormat = 'd/m';
+            $addMethod = 'addDay';
+            $startMethod = null;
+
+            if ($diffGiorni > 730) { // > 2 Anni -> ANNUALE
+                $groupByFormat = 'Y';
+                $labelFormat = 'Y';
+                $addMethod = 'addYear';
+                $startMethod = 'startOfYear';
+            } elseif ($diffGiorni > 90) { // > 3 Mesi -> MENSILE
+                $groupByFormat = 'Y-m';
+                $labelFormat = 'm/Y';
+                $addMethod = 'addMonth';
+                $startMethod = 'startOfMonth';
             }
 
-            if (!$contoId) {
-                return response()->json([
-                    'success' => false,
-                    'error' => 'conto_id è obbligatorio per visualizzare l\'andamento del saldo',
-                    'code' => 400
-                ], 400);
+            // 3. CALCOLO SALDO INIZIALE
+            $saldoInizialePeriodo = 0;
+            $tagIds = $request->input('tag_ids');
+            $hasTagFilter = !empty($tagIds);
+
+            if (!$hasTagFilter) {
+                $queryStorico = Operazione::where('data_operazione', '<', $dataInizio);
+                if ($contoId) $queryStorico->where('conto_id', $contoId);
+                $saldoInizialePeriodo = (float) $queryStorico->sum('importo');
             }
 
-            // ============================================================
-            // PARSING FILTRI
-            // ============================================================
-            $dataInizio = $request->input('data_inizio')
-                ? Carbon::parse($request->input('data_inizio'))->startOfDay()
-                : Carbon::now()->subMonths(3)->startOfDay();
+            // 4. RECUPERO DATI PERIODO
+            $queryOps = Operazione::whereBetween('data_operazione', [$dataInizio, $dataFine])
+                ->orderBy('data_operazione', 'ASC');
 
-            $dataFine = $request->input('data_fine')
-                ? Carbon::parse($request->input('data_fine'))->endOfDay()
-                : Carbon::now()->endOfDay();
+            $this->applicaFiltri($queryOps, $request);
 
-            // ============================================================
-            // 1. RECUPERA IL CONTO E IL SALDO INIZIALE
-            // ============================================================
-            $conto = Conto::findOrFail($contoId);
-            $saldoIniziale = (float) ($conto->saldo_iniziale ?? 0);
+            // Raggruppa i movimenti secondo la scala scelta (usando il formato corretto)
+            $operazioniRaggruppate = $queryOps->get()
+                ->groupBy(function ($op) use ($groupByFormat) {
+                    return Carbon::parse($op->data_operazione)->format($groupByFormat);
+                });
 
-            // ============================================================
-            // 2. RECUPERA OPERAZIONI DEL CONTO NEL PERIODO
-            // ============================================================
-            $operazioni = Operazione::where('conto_id', $contoId)
-                ->whereBetween('data_operazione', [$dataInizio, $dataFine])
-                ->orderBy('data_operazione', 'ASC')
-                ->select('data_operazione', 'importo')
-                ->get();
-
-            // ============================================================
-            // 3. CALCOLA SALDO CUMULATIVO GIORNO PER GIORNO
-            // ============================================================
+            // 5. GENERAZIONE PUNTI
             $andamento = [];
-            $saldoCorrente = $saldoIniziale;
+            $saldoCorrente = $saldoInizialePeriodo;
 
-            // Raggruppa operazioni per data
-            $operazioniByDate = $operazioni->groupBy('data_operazione');
+            $cursore = clone $dataInizio;
+            if ($startMethod) $cursore->$startMethod(); // Normalizza inizio (es. 1 Gennaio)
 
-            // Genera tutte le date da inizio a fine
-            $currentDate = clone $dataInizio;
+            // Loop fino alla data fine, usando il formato di raggruppamento per il confronto
+            while ($cursore->format($groupByFormat) <= $dataFine->format($groupByFormat)) {
 
-            while ($currentDate <= $dataFine) {
-                $formattedDate = $currentDate->format('Y-m-d');
+                $chiave = $cursore->format($groupByFormat); // es. "2024-01" o "2024"
 
-                // Se ci sono operazioni in questa data, aggiorna il saldo
-                if (isset($operazioniByDate[$formattedDate])) {
-                    $importoGiorno = $operazioniByDate[$formattedDate]->sum('importo');
-                    $saldoCorrente += $importoGiorno;
+                // Se ci sono operazioni in questo "bucket", aggiorna il saldo
+                if (isset($operazioniRaggruppate[$chiave])) {
+                    $saldoCorrente += $operazioniRaggruppate[$chiave]->sum('importo');
                 }
 
                 $andamento[] = [
-                    'data' => $formattedDate,
-                    'saldo' => round($saldoCorrente, 2)
+                    'data' => $cursore->format($labelFormat),
+                    'saldo' => round($saldoCorrente, 2),
+                    'full_date' => $cursore->format('Y-m-d')
                 ];
 
-                $currentDate->addDay();
+                $cursore->$addMethod();
             }
 
-            // ============================================================
-            // 4. STATISTICHE
-            // ============================================================
-            $saldoMinimo = min(array_column($andamento, 'saldo'));
-            $saldoMassimo = max(array_column($andamento, 'saldo'));
+            // 6. RISPOSTA
+            $saldi = array_column($andamento, 'saldo');
+            $saldoMin = count($saldi) > 0 ? min($saldi) : $saldoInizialePeriodo;
+            $saldoMax = count($saldi) > 0 ? max($saldi) : $saldoInizialePeriodo;
+
+            $nomeConto = $contoId ? Conto::find($contoId)->nome : 'Patrimonio Totale';
+            if ($hasTagFilter) $nomeConto .= ' (Filtrato)';
 
             return response()->json([
                 'success' => true,
                 'data' => $andamento,
-                'conto' => [                    // ⬅️ AGGIUNTO!
-                    'id' => $conto->id,
-                    'nome' => $conto->nome
-                ],
-                'filtri' => [
-                    'data_inizio' => $dataInizio->format('Y-m-d'),
-                    'data_fine' => $dataFine->format('Y-m-d')
-                ],
-                'statistiche' => [              // ⬅️ AGGIUNTO!
-                    'saldo_iniziale' => $saldoIniziale,
+                'conto' => ['id' => $contoId, 'nome' => $nomeConto],
+                'statistiche' => [
+                    'saldo_iniziale' => round($saldoInizialePeriodo, 2),
                     'saldo_finale' => round($saldoCorrente, 2),
-                    'variazione' => round($saldoCorrente - $saldoIniziale, 2),
-                    'saldo_minimo' => $saldoMinimo,
-                    'saldo_massimo' => $saldoMassimo,
-                    'num_giorni' => count($andamento)
-                ],
-                'message' => 'Andamento saldo recuperato'
+                    'variazione' => round($saldoCorrente - $saldoInizialePeriodo, 2),
+                    'saldo_minimo' => $saldoMin,
+                    'saldo_massimo' => $saldoMax
+                ]
             ]);
         } catch (\Exception $e) {
-            logger()->error('Errore in andamentoSaldo', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine()
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'error' => $e->getMessage(),
-                'line' => $e->getLine()
-            ], 500);
+            Log::error($e);
+            return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
         }
     }
 }
