@@ -227,4 +227,29 @@ class AuthController extends Controller
             ], 500);
         }
     }
+    
+    public function updatePassword(Request $request)
+    {
+        // 1. Validazione dei dati in ingresso
+        $request->validate([
+            'current_password' => ['required', 'string'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'], // 'confirmed' si aspetta un campo 'password_confirmation'
+        ]);
+
+        $user = $request->user();
+
+        // 2. Verifica che la password attuale sia corretta
+        if (!Hash::check($request->current_password, $user->password)) {
+            return response()->json([
+                'message' => 'La password attuale non è corretta.'
+            ], 422); // 422: Unprocessable Entity (Errore di validazione)
+        }
+
+        // 3. Salvataggio della nuova password criptata
+        $user->password = Hash::make($request->password);
+        $user->save();
+
+        return response()->json(['message' => 'Password aggiornata con successo!']);
+    }
+
 }
