@@ -1,8 +1,8 @@
 {
-    "name": "laravel/laravel",
+    "name": "dnlx77/mybudget-backend",
     "type": "project",
-    "description": "The skeleton application for the Laravel framework.",
-    "keywords": ["laravel", "framework"],
+    "description": "Backend API REST (Laravel) per MyBudget, applicazione di gestione budget personale. Consuma da un frontend Angular separato.",
+    "keywords": ["laravel", "api", "budget"],
     "license": "MIT",
     "require": {
         "php": "^8.2",
