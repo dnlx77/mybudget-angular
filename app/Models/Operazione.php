@@ -51,10 +51,12 @@ class Operazione extends Model
             $query->where('conto_id', '=', $conto_id);
         }
 
-        // Filtro per tag
+        // Filtro per tag (uno o più, es. da un gruppo tag: id separati da virgola)
         if ($tag) {
-            $query->join('rel_operazioni_tags', 'operazioni.id', '=', 'rel_operazioni_tags.operazione_id')
-                ->where('tag_id', '=', $tag);
+            $tagIds = is_array($tag) ? $tag : explode(',', $tag);
+            $query->whereHas('tags', function ($q) use ($tagIds) {
+                $q->whereIn('tags.id', $tagIds);
+            });
         }
 
         // Filtro per descrizione (ricerca parziale, case-insensitive su MySQL)

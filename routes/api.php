@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ContiApiController;
 use App\Http\Controllers\Api\OperazioniApiController;
 use App\Http\Controllers\Api\TagsApiController;
+use App\Http\Controllers\Api\GruppiTagApiController;
 use App\Http\Controllers\Api\GraficiController;
 
 /*
@@ -118,6 +119,22 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     Route::get('tags/{id}', [TagsApiController::class, 'show']);
     Route::put('tags/{id}', [TagsApiController::class, 'update']);
     Route::delete('tags/{id}', [TagsApiController::class, 'destroy']);
+
+
+    // ============================================================
+    // GRUPPI TAG ROUTES ("tag virtuali": raccolte di tag salvate)
+    // ============================================================
+    // GET    /api/gruppi-tag              → index (lista, con i tag inclusi)
+    // POST   /api/gruppi-tag              → store (crea, con array di tag_id)
+    // GET    /api/gruppi-tag/{id}         → show (uno)
+    // PUT    /api/gruppi-tag/{id}         → update (aggiorna nome/tag)
+    // DELETE /api/gruppi-tag/{id}         → destroy (cancella)
+
+    Route::get('gruppi-tag', [GruppiTagApiController::class, 'index']);
+    Route::post('gruppi-tag', [GruppiTagApiController::class, 'store']);
+    Route::get('gruppi-tag/{id}', [GruppiTagApiController::class, 'show']);
+    Route::put('gruppi-tag/{id}', [GruppiTagApiController::class, 'update']);
+    Route::delete('gruppi-tag/{id}', [GruppiTagApiController::class, 'destroy']);
 
 
     // ============================================================
