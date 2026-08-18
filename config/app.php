@@ -61,6 +61,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | API Route Prefix
+    |--------------------------------------------------------------------------
+    |
+    | Prefisso applicato alle rotte di routes/api.php. In locale il dominio
+    | serve l'intera app Laravel, quindi resta "api". In produzione il
+    | webserver instrada già /api/* verso questa app togliendo il prefisso
+    | prima di inoltrarlo (per condividere il dominio col frontend Angular),
+    | quindi lì va impostato API_ROUTE_PREFIX="" (vuoto) nel .env.
+    |
+    */
+
+    'api_route_prefix' => env('API_ROUTE_PREFIX', 'api'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |
