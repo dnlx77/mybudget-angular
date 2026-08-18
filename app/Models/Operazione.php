@@ -29,7 +29,7 @@ class Operazione extends Model
         return $this->belongsTo(Conto::class, 'conto_id');
     }
 
-    public function scopeCercaOperazioniAvanzato($query, $data, $conto_id, $tag, $anno = null, $mese = null)
+    public function scopeCercaOperazioniAvanzato($query, $data, $conto_id, $tag, $anno = null, $mese = null, $descrizione = null)
     {
         // Filtro per anno
         if ($anno) {
@@ -55,6 +55,11 @@ class Operazione extends Model
         if ($tag) {
             $query->join('rel_operazioni_tags', 'operazioni.id', '=', 'rel_operazioni_tags.operazione_id')
                 ->where('tag_id', '=', $tag);
+        }
+
+        // Filtro per descrizione (ricerca parziale, case-insensitive su MySQL)
+        if ($descrizione) {
+            $query->where('descrizione', 'like', '%' . $descrizione . '%');
         }
 
         return $query;

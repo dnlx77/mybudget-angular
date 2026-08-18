@@ -20,13 +20,14 @@ class OperazioniApiController extends Controller
             $query = Operazione::with(['conto', 'tags']);
 
             // Applica filtri (identico all'originale)
-            if ($request->anyFilled(['anno', 'mese', 'data', 'conto_id', 'tag'])) {
+            if ($request->anyFilled(['anno', 'mese', 'data', 'conto_id', 'tag', 'descrizione'])) {
                 $query->cercaOperazioniAvanzato(
                     $request->input('data'),
                     $request->input('conto_id'),
                     $request->input('tag'),
                     $request->input('anno'),
-                    $request->input('mese')
+                    $request->input('mese'),
+                    $request->input('descrizione')
                 );
             }
 
@@ -284,13 +285,14 @@ class OperazioniApiController extends Controller
             $query = Operazione::query();
 
             // 1. Applica filtri (identico all'index)
-            if ($request->anyFilled(['anno', 'mese', 'data', 'conto_id', 'tag'])) {
+            if ($request->anyFilled(['anno', 'mese', 'data', 'conto_id', 'tag', 'descrizione'])) {
                 $query->cercaOperazioniAvanzato(
                     $request->input('data'),
                     $request->input('conto_id'),
                     $request->input('tag'),
                     $request->input('anno'),
-                    $request->input('mese')
+                    $request->input('mese'),
+                    $request->input('descrizione')
                 );
             }
 
