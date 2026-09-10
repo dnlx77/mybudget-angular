@@ -17,6 +17,7 @@ class Operazione extends Model
         'importo',
         'descrizione',
         'conto_id',
+        'pagamento_rata_id',
         'trasferimento',
         'transfer_code'
     ];
@@ -27,6 +28,10 @@ class Operazione extends Model
 
     public function conto() {
         return $this->belongsTo(Conto::class, 'conto_id');
+    }
+
+    public function pagamentoRata() {
+        return $this->belongsTo(PagamentoRata::class, 'pagamento_rata_id');
     }
 
     public function scopeCercaOperazioniAvanzato($query, $data, $conto_id, $tag, $anno = null, $mese = null, $descrizione = null)

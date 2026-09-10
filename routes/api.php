@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\ContiApiController;
 use App\Http\Controllers\Api\OperazioniApiController;
 use App\Http\Controllers\Api\TagsApiController;
 use App\Http\Controllers\Api\GruppiTagApiController;
+use App\Http\Controllers\Api\PagamentiRateApiController;
 use App\Http\Controllers\Api\GraficiController;
 
 /*
@@ -135,6 +136,19 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     Route::get('gruppi-tag/{id}', [GruppiTagApiController::class, 'show']);
     Route::put('gruppi-tag/{id}', [GruppiTagApiController::class, 'update']);
     Route::delete('gruppi-tag/{id}', [GruppiTagApiController::class, 'destroy']);
+
+
+    // ============================================================
+    // PAGAMENTI RATE ROUTES
+    // ============================================================
+    // Residuo, rate pagate e stato si calcolano dalle operazioni collegate
+    // (vedi App\Models\PagamentoRata), non sono salvati come dato a parte.
+
+    Route::get('pagamenti-rate', [PagamentiRateApiController::class, 'index']);
+    Route::post('pagamenti-rate', [PagamentiRateApiController::class, 'store']);
+    Route::get('pagamenti-rate/{id}', [PagamentiRateApiController::class, 'show']);
+    Route::put('pagamenti-rate/{id}', [PagamentiRateApiController::class, 'update']);
+    Route::delete('pagamenti-rate/{id}', [PagamentiRateApiController::class, 'destroy']);
 
 
     // ============================================================

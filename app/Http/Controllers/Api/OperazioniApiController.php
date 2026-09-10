@@ -17,7 +17,7 @@ class OperazioniApiController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = Operazione::with(['conto', 'tags']);
+            $query = Operazione::with(['conto', 'tags', 'pagamentoRata']);
 
             // Applica filtri (identico all'originale)
             if ($request->anyFilled(['anno', 'mese', 'data', 'conto_id', 'tag', 'descrizione'])) {
@@ -74,6 +74,7 @@ class OperazioniApiController extends Controller
                 'descrizione' => 'nullable|string|max:500',
                 'conto_id' => 'required|exists:conti,id',
                 'conto_destinazione_id' => 'nullable|different:conto_id|exists:conti,id',
+                'pagamento_rata_id' => 'nullable|exists:pagamenti_rate,id',
                 'tags' => 'required|array|min:1', // <-- RIPRISTINATO REQUIRED
                 'tags.*' => 'exists:tags,id'
             ]);
@@ -119,7 +120,9 @@ class OperazioniApiController extends Controller
                         : $dicituraTransfer;
 
                     // Rimuoviamo conto_destinazione_id dai dati da salvare nell'operazione 1
+                    // Un trasferimento non è un pagamento a rate, non ha senso collegarlo
                     unset($validated['conto_destinazione_id']);
+                    unset($validated['pagamento_rata_id']);
 
                     // 1. Uscita (Negativa)
                     // Usiamo array_merge per sovrascrivere i campi necessari
@@ -165,7 +168,7 @@ class OperazioniApiController extends Controller
                     ]));
 
                     $op->tags()->sync($tags);
-                    $op->load(['tags', 'conto']);
+                    $op->load(['tags', 'conto', 'pagamentoRata']);
 
                     return response()->json([
                         'success' => true,
@@ -196,6 +199,7 @@ class OperazioniApiController extends Controller
                 'importo' => 'required|numeric',
                 'descrizione' => 'nullable|string|max:500',
                 'conto_id' => 'required|exists:conti,id',
+                'pagamento_rata_id' => 'nullable|exists:pagamenti_rate,id',
                 'tags' => 'required|array|min:1', // <-- RIPRISTINATO REQUIRED
                 'tags.*' => 'exists:tags,id'
             ]);
@@ -225,7 +229,7 @@ class OperazioniApiController extends Controller
                     }
                 }
 
-                $operazione->load(['conto', 'tags']);
+                $operazione->load(['conto', 'tags', 'pagamentoRata']);
 
                 return response()->json([
                     'success' => true,
@@ -336,7 +340,7 @@ class OperazioniApiController extends Controller
     public function show($id)
     {
         try {
-            $operazione = Operazione::with(['conto', 'tags'])->findOrFail($id);
+            $operazione = Operazione::with(['conto', 'tags', 'pagamentoRata'])->findOrFail($id);
             return response()->json([
                 'success' => true,
                 'data' => $operazione,
