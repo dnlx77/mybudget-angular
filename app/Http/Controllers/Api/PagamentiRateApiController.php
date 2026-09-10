@@ -36,9 +36,8 @@ class PagamentiRateApiController extends Controller
             $statoFiltro = $request->input('stato');
 
             $tutti = PagamentoRata::with('operazioni')
-                // id come criterio secondario: created_at ha risoluzione al secondo,
-                // quindi non basta da solo a ordinare in modo stabile record ravvicinati
-                ->orderByDesc('created_at')
+                // id come criterio secondario: più piani possono avere la stessa data_inizio
+                ->orderByDesc('data_inizio')
                 ->orderByDesc('id')
                 ->get();
 
