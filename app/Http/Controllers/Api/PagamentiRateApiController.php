@@ -17,16 +17,50 @@ class PagamentiRateApiController extends Controller
 {
     /**
      * GET /api/v1/pagamenti-rate
+     *
+     * Paginato (default 15 per pagina, come la lista operazioni). I consumer
+     * che necessitano dell'elenco completo (widget dashboard, select nel form
+     * operazione) chiedono esplicitamente un per_page più alto.
+     *
+     * Filtro opzionale ?stato=attivo|completato. Essendo "stato" un attributo
+     * calcolato (non una colonna), il filtro si applica in PHP dopo aver
+     * caricato le operazioni collegate, poi si pagina manualmente il risultato:
+     * a scala personale (poche decine di piani) è semplice e sempre corretto,
+     * senza dover tradurre la logica di calcolo dello stato in SQL.
      */
-    public function index()
+    public function index(Request $request)
     {
         try {
-            $pagamenti = PagamentoRata::with('operazioni')->orderByDesc('data_inizio')->get();
+            $perPage = (int) $request->input('per_page', 15);
+            $page = (int) $request->input('page', 1);
+            $statoFiltro = $request->input('stato');
+
+            $tutti = PagamentoRata::with('operazioni')
+                // id come criterio secondario: created_at ha risoluzione al secondo,
+                // quindi non basta da solo a ordinare in modo stabile record ravvicinati
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->get();
+
+            if ($statoFiltro) {
+                $tutti = $tutti->filter(fn ($p) => $p->stato === $statoFiltro)->values();
+            }
+
+            $totale = $tutti->count();
+            $ultimaPagina = max(1, (int) ceil($totale / $perPage));
+            $items = $tutti->forPage($page, $perPage)->values();
 
             return response()->json([
                 'success' => true,
-                'data' => $pagamenti,
-                'count' => $pagamenti->count(),
+                'data' => $items,
+                'pagination' => [
+                    'current_page' => $page,
+                    'per_page' => $perPage,
+                    'total' => $totale,
+                    'last_page' => $ultimaPagina,
+                    'has_more' => $page < $ultimaPagina,
+                ],
+                'count' => $items->count(),
                 'message' => 'Pagamenti a rate recuperati con successo'
             ]);
         } catch (\Exception $e) {
