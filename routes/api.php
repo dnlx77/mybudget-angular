@@ -158,6 +158,7 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
         Route::get('spese-per-tag', [GraficiController::class, 'spesePerTag']);
         Route::get('guadagni-vs-spese', [GraficiController::class, 'guadagniVsSpese']);
         Route::get('andamento-saldo', [GraficiController::class, 'andamentoSaldo']);
+        Route::get('confronto-periodi', [GraficiController::class, 'confrontoPeriodi']);
     });
 });
 

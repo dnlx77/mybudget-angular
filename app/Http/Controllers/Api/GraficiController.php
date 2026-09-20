@@ -323,4 +323,256 @@ class GraficiController extends Controller
             return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
         }
     }
+
+    // ============================================================
+    // CONFRONTO TRA PERIODI
+    // ============================================================
+
+    /**
+     * GET /api/v1/grafici/confronto-periodi
+     *
+     * Confronta il periodo corrente (A) con uno precedente (B), scelto da un preset.
+     * Con parita_giorni=1 (default) e periodi in corso, B viene limitato agli stessi
+     * giorni trascorsi di A (es. 1-20 settembre vs 1-20 agosto), altrimenti si
+     * confrontano i periodi interi. Trasferimenti esclusi, come negli altri grafici.
+     */
+    public function confrontoPeriodi(Request $request)
+    {
+        try {
+            $request->validate([
+                'preset' => 'nullable|in:mese_scorso,anno_scorso,stesso_mese_anno_scorso',
+                'parita_giorni' => 'nullable|boolean',
+            ]);
+
+            $preset = $request->input('preset', 'mese_scorso');
+            $parita = $request->boolean('parita_giorni', true);
+
+            [$inizioA, $fineA, $inizioB, $fineB, $oggi] = $this->calcolaPeriodiConfronto($preset, $parita);
+
+            $aggA = $this->aggregaPeriodo($request, $inizioA, $fineA);
+            $aggB = $this->aggregaPeriodo($request, $inizioB, $fineB);
+
+            $punti = max($this->giorniInclusi($inizioA, $fineA), $this->giorniInclusi($inizioB, $fineB));
+
+            // A si ferma a oggi (i giorni futuri non hanno ancora dati)
+            $finoAOggi = $oggi->copy()->endOfDay();
+            $limiteA = $fineA->lessThan($finoAOggi) ? $fineA : $finoAOggi;
+
+            $etichette = [];
+            for ($i = 0; $i < $punti; $i++) {
+                $etichette[] = $preset === 'anno_scorso'
+                    ? $inizioA->copy()->addDays($i)->format('d/m')
+                    : (string) ($i + 1);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'preset' => $preset,
+                    'parita_giorni' => $parita,
+                    'periodo_a' => $this->descriviPeriodo($inizioA, $fineA, $preset),
+                    'periodo_b' => $this->descriviPeriodo($inizioB, $fineB, $preset),
+                    'riepilogo' => [
+                        'entrate' => $this->variazione($aggA['entrate'], $aggB['entrate']),
+                        'uscite' => $this->variazione($aggA['uscite'], $aggB['uscite']),
+                        'saldo' => $this->variazione(
+                            $aggA['entrate'] - $aggA['uscite'],
+                            $aggB['entrate'] - $aggB['uscite']
+                        ),
+                    ],
+                    'per_tag' => $this->unisciTagPeriodi($aggA['per_tag'], $aggB['per_tag']),
+                    'cumulativa' => [
+                        'etichette' => $etichette,
+                        'a' => $this->serieCumulativa($inizioA, $limiteA, $aggA['uscite_giornaliere'], $punti),
+                        'b' => $this->serieCumulativa($inizioB, $fineB, $aggB['uscite_giornaliere'], $punti),
+                    ],
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'errors' => $e->errors(), 'message' => 'Errore di validazione'], 422);
+        } catch (\Exception $e) {
+            Log::error($e);
+            return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Calcola gli estremi di A (periodo corrente) e B (periodo di confronto).
+     * Con la parità, B è A traslato indietro di un mese/anno (senza overflow,
+     * es. 31 marzo -> 28 febbraio) e A si ferma a oggi.
+     */
+    private function calcolaPeriodiConfronto(string $preset, bool $parita): array
+    {
+        $oggi = Carbon::now();
+
+        if ($preset === 'anno_scorso') {
+            $inizioA = $oggi->copy()->startOfYear();
+            $inizioB = $inizioA->copy()->subYear();
+            $fineNaturaleA = $inizioA->copy()->endOfYear();
+            $fineNaturaleB = $inizioB->copy()->endOfYear();
+            $fineParitaB = $oggi->copy()->subYearNoOverflow();
+        } else {
+            $inizioA = $oggi->copy()->startOfMonth();
+            $spostaIndietro = fn (Carbon $d) => $preset === 'mese_scorso'
+                ? $d->copy()->subMonthNoOverflow()
+                : $d->copy()->subYearNoOverflow();
+            $inizioB = $spostaIndietro($inizioA);
+            $fineNaturaleA = $inizioA->copy()->endOfMonth();
+            $fineNaturaleB = $inizioB->copy()->endOfMonth();
+            $fineParitaB = $spostaIndietro($oggi);
+        }
+
+        $fineA = $parita ? $oggi->copy()->endOfDay() : $fineNaturaleA;
+        $fineB = $parita ? $fineParitaB->endOfDay() : $fineNaturaleB;
+
+        return [$inizioA, $fineA, $inizioB, $fineB, $oggi];
+    }
+
+    private function giorniInclusi(Carbon $inizio, Carbon $fine): int
+    {
+        return (int) round($inizio->copy()->startOfDay()->diffInDays($fine->copy()->startOfDay())) + 1;
+    }
+
+    private function descriviPeriodo(Carbon $inizio, Carbon $fine, string $preset): array
+    {
+        $etichetta = $preset === 'anno_scorso'
+            ? $inizio->format('Y')
+            : ucfirst($inizio->copy()->locale('it')->translatedFormat('F Y'));
+
+        return [
+            'etichetta' => $etichetta,
+            'inizio' => $inizio->format('Y-m-d'),
+            'fine' => $fine->format('Y-m-d'),
+        ];
+    }
+
+    /**
+     * Entrate, uscite, spese per tag e uscite giornaliere di un periodo.
+     * Per le spese per tag vale la stessa regola del grafico a torta: un'operazione
+     * con più tag conta per intero su ciascuno.
+     */
+    private function aggregaPeriodo(Request $request, Carbon $inizio, Carbon $fine): array
+    {
+        $query = Operazione::with('tags')
+            ->where('trasferimento', 'N')
+            ->whereBetween('data_operazione', [$inizio, $fine]);
+
+        $this->applicaFiltri($query, $request);
+
+        $filterTagIds = $request->input('tag_ids');
+        if (is_string($filterTagIds)) $filterTagIds = explode(',', $filterTagIds);
+
+        $entrate = 0.0;
+        $uscite = 0.0;
+        $perTag = [];
+        $usciteGiornaliere = [];
+
+        foreach ($query->get() as $op) {
+            $importo = (float) $op->importo;
+
+            if ($importo > 0) {
+                $entrate += $importo;
+                continue;
+            }
+            if ($importo == 0) continue;
+
+            $spesa = abs($importo);
+            $uscite += $spesa;
+
+            $giorno = Carbon::parse($op->data_operazione)->format('Y-m-d');
+            $usciteGiornaliere[$giorno] = ($usciteGiornaliere[$giorno] ?? 0) + $spesa;
+
+            $tags = $op->tags;
+            if (!empty($filterTagIds)) {
+                $tags = $tags->whereIn('id', $filterTagIds);
+            }
+
+            if ($tags->isEmpty()) {
+                if (empty($filterTagIds)) {
+                    $perTag[0] = ['nome' => 'Nessun Tag', 'totale' => ($perTag[0]['totale'] ?? 0) + $spesa];
+                }
+                continue;
+            }
+
+            foreach ($tags as $tag) {
+                $perTag[$tag->id] = ['nome' => $tag->nome, 'totale' => ($perTag[$tag->id]['totale'] ?? 0) + $spesa];
+            }
+        }
+
+        return [
+            'entrate' => $entrate,
+            'uscite' => $uscite,
+            'per_tag' => $perTag,
+            'uscite_giornaliere' => $usciteGiornaliere,
+        ];
+    }
+
+    /**
+     * Unisce le spese per tag di A e B PRIMA di troncare ai primi N,
+     * così "Altro" è confrontabile tra i due periodi.
+     */
+    private function unisciTagPeriodi(array $tagA, array $tagB, int $limite = 10): array
+    {
+        $unione = [];
+
+        foreach ($tagA as $id => $t) {
+            $unione[$id] = ['nome' => $t['nome'], 'a' => $t['totale'], 'b' => 0.0];
+        }
+        foreach ($tagB as $id => $t) {
+            $unione[$id] ??= ['nome' => $t['nome'], 'a' => 0.0, 'b' => 0.0];
+            $unione[$id]['b'] = $t['totale'];
+        }
+
+        $righe = array_values($unione);
+        usort($righe, fn ($x, $y) => ($y['a'] + $y['b']) <=> ($x['a'] + $x['b']));
+
+        if (count($righe) > $limite) {
+            $resto = array_slice($righe, $limite);
+            $righe = array_slice($righe, 0, $limite);
+            $righe[] = [
+                'nome' => 'Altro',
+                'a' => array_sum(array_column($resto, 'a')),
+                'b' => array_sum(array_column($resto, 'b')),
+            ];
+        }
+
+        return array_map(fn ($r) => [
+            'nome' => $r['nome'],
+            'a' => round($r['a'], 2),
+            'b' => round($r['b'], 2),
+        ], $righe);
+    }
+
+    /**
+     * Spesa cumulata giorno per giorno; null oltre $fineEffettiva (la linea si interrompe).
+     */
+    private function serieCumulativa(Carbon $inizio, Carbon $fineEffettiva, array $usciteGiornaliere, int $punti): array
+    {
+        $serie = [];
+        $cumulo = 0.0;
+
+        for ($i = 0; $i < $punti; $i++) {
+            $giorno = $inizio->copy()->startOfDay()->addDays($i);
+
+            if ($giorno->greaterThan($fineEffettiva)) {
+                $serie[] = null;
+                continue;
+            }
+
+            $cumulo += $usciteGiornaliere[$giorno->format('Y-m-d')] ?? 0;
+            $serie[] = round($cumulo, 2);
+        }
+
+        return $serie;
+    }
+
+    private function variazione(float $a, float $b): array
+    {
+        return [
+            'a' => round($a, 2),
+            'b' => round($b, 2),
+            'differenza' => round($a - $b, 2),
+            'percentuale' => abs($b) > 0.005 ? round(($a - $b) / abs($b) * 100, 1) : null,
+        ];
+    }
 }
