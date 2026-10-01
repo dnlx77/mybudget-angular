@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use App\Traits\BelongsToUser;
+use Carbon\Carbon;
 
 class PagamentoRata extends Model
 {
@@ -29,6 +30,8 @@ class PagamentoRata extends Model
         'importo_residuo',
         'rate_pagate',
         'stato',
+        'rata_mensile',
+        'rata_mensile_residua',
     ];
 
     public function operazioni()
@@ -54,5 +57,28 @@ class PagamentoRata extends Model
     public function getStatoAttribute()
     {
         return $this->rate_pagate >= $this->numero_rate ? 'completato' : 'attivo';
+    }
+
+    public function getRataMensileAttribute()
+    {
+        return $this->numero_rate > 0 ? round($this->importo_totale / $this->numero_rate, 2) : 0;
+    }
+
+    /**
+     * Quanto manca a pagare QUESTO mese: la rata intera se nel mese corrente non è
+     * ancora stata collegata nessuna operazione, 0 se è già stata pagata (o il piano
+     * è completato). Non è "residuo totale / rate rimanenti", ma la parte dovuta ora.
+     */
+    public function getRataMensileResiduaAttribute()
+    {
+        if ($this->stato === 'completato') {
+            return 0;
+        }
+
+        $pagataQuestoMese = $this->operazioni->contains(
+            fn ($op) => Carbon::parse($op->data_operazione)->isSameMonth(now())
+        );
+
+        return $pagataQuestoMese ? 0 : $this->rata_mensile;
     }
 }
