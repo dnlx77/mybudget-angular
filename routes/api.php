@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\OperazioniApiController;
 use App\Http\Controllers\Api\TagsApiController;
 use App\Http\Controllers\Api\GruppiTagApiController;
 use App\Http\Controllers\Api\PagamentiRateApiController;
+use App\Http\Controllers\Api\BudgetApiController;
 use App\Http\Controllers\Api\GraficiController;
 
 /*
@@ -149,6 +150,16 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     Route::get('pagamenti-rate/{id}', [PagamentiRateApiController::class, 'show']);
     Route::put('pagamenti-rate/{id}', [PagamentiRateApiController::class, 'update']);
     Route::delete('pagamenti-rate/{id}', [PagamentiRateApiController::class, 'destroy']);
+
+
+    // ============================================================
+    // BUDGET MENSILE
+    // ============================================================
+    // GET /api/budget?anno=&mese=[&tag=1,2]  → budget, proposta, speso del mese (e del tag)
+    // PUT /api/budget                        → imposta il budget di un mese
+
+    Route::get('budget', [BudgetApiController::class, 'show']);
+    Route::put('budget', [BudgetApiController::class, 'update']);
 
 
     // ============================================================
